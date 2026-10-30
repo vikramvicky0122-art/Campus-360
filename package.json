@@ -1,0 +1,15 @@
+{
+  "name": "campus-360",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CampusRent project workspace",
+  "scripts": {
+    "dev": "npm --prefix Campus-Rent-main/frontend run dev",
+    "dev:frontend": "npm --prefix Campus-Rent-main/frontend run dev",
+    "dev:backend": "npm --prefix Campus-Rent-main/backend run dev",
+    "dev:all": "node -e \"const { spawn } = require('child_process'); spawn('npm', ['--prefix', 'Campus-Rent-main/backend', 'run', 'dev'], { stdio: 'inherit', shell: true }); spawn('npm', ['--prefix', 'Campus-Rent-main/frontend', 'run', 'dev'], { stdio: 'inherit', shell: true });\"",
+    "build": "npm --prefix Campus-Rent-main/frontend run build",
+    "test": "npm --prefix Campus-Rent-main/frontend test",
+    "install:all": "npm --prefix Campus-Rent-main/backend install && npm --prefix Campus-Rent-main/frontend install"
+  }
+}

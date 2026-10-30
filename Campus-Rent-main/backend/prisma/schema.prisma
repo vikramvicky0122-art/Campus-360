@@ -1,0 +1,298 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum BookingStatus {
+  requested
+  approved
+  item_given
+  ongoing
+  return_pending
+  completed
+  rejected
+  cancelled
+}
+
+enum ListingStatus {
+  active
+  hidden
+  paused
+  deleted
+}
+
+// Payment status for a rental transaction
+enum PaymentStatus {
+  pending
+  mock_paid       // Local dev mock payment
+  youpi_initiated // YouPI-PG session created
+  youpi_observed  // OBSERVED_SUCCESS from YouPI-PG (NOT bank-reconciled)
+  confirmed       // Admin-confirmed / reconciled
+  cancelled
+  refunded_partial
+  refunded_full
+}
+
+// Payout status for owner share
+enum PayoutStatus {
+  pending   // Commission calculated, owner share not yet paid out
+  paid      // Admin has confirmed payout to owner
+  failed    // Payout attempt failed
+}
+
+model User {
+  id                   String   @id @default(uuid())
+  fullName             String
+  collegeEmail         String   @unique
+  passwordHash         String
+  role                 Role     @default(USER)
+  department           String?
+  yearOfStudy          String?
+  bio                  String?
+  profileImage         String?
+  preferredPickupZones String[]
+  lenderRating         Float    @default(0)
+  ratingsCount         Int      @default(0)
+
+  // Relations: Users can be both lenders and borrowers natively
+  listings              Listing[]
+  borrowedBookings      Booking[] @relation("BorrowerBookings")
+  cancelledBookings     Booking[] @relation("CancelledBookings")
+  conversationParticipations ConversationParticipant[]
+  sentMessages               Message[]
+  payoutsOwned               PayoutRecord[] @relation("OwnerPayouts")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Listing {
+  id                  String        @id @default(uuid())
+  title               String
+  description         String
+  category            String
+  condition           String
+  dailyRentalRate     Float
+  securityDeposit     Float
+  retailPrice         Float
+  minimumRentalDays   Int           @default(1)
+  preferredPickupZone String
+  customPickupNote    String?
+  status              ListingStatus @default(active)
+
+  // Relations
+  ownerId  String
+  owner    User           @relation(fields: [ownerId], references: [id])
+  images   ListingImage[]
+  bookings Booking[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([category])
+  @@index([status])
+}
+
+model ListingImage {
+  id           String @id @default(uuid())
+  imageUrl     String
+  displayOrder Int    @default(0)
+
+  // Relations
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([listingId, displayOrder])
+  @@index([listingId])
+}
+
+model Booking {
+  id        String        @id @default(uuid())
+  startDate DateTime
+  endDate   DateTime
+  status    BookingStatus @default(requested)
+
+  // Financial Snapshots
+  totalPriceSnapshot      Float
+  securityDepositSnapshot Float
+
+  // Pickup Details
+  pickupZone String
+  pickupTime DateTime?
+
+  // Lifecycle timestamps
+  approvedAt         DateTime?
+  returnedAt         DateTime?
+  cancelledAt        DateTime?
+  cancellationReason String?
+
+  // Relations
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id])
+
+  borrowerId String
+  borrower   User   @relation("BorrowerBookings", fields: [borrowerId], references: [id])
+
+  ownerId String // Owner snapshot
+
+  cancelledById String?
+  cancelledBy   User?   @relation("CancelledBookings", fields: [cancelledById], references: [id])
+
+  // Chat relation
+  conversation Conversation?
+
+  // Payment relation (one booking => one transaction)
+  transaction RentalTransaction?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([listingId])
+  @@index([borrowerId])
+  @@index([ownerId])
+  @@index([status])
+}
+
+// === Campus 360 Commission & Payment Ledger ===
+
+/// One record per completed booking. All money in integer paise (1 INR = 100 paise).
+/// Commission = 5% of grossRentalAmountPaise (excludes security deposit).
+/// Never trust client-submitted amounts; recalculate server-side on creation.
+model RentalTransaction {
+  id        String @id @default(uuid())
+
+  // Booking link (1:1)
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id])
+
+  // Amounts in paise (integer arithmetic, no floating-point errors)
+  grossRentalAmountPaise  Int // = daily rate x days (booking's rental portion)
+  securityDepositPaise    Int // excluded from commission base
+  commissionRateBps       Int @default(500) // 500 = 5.00% in basis points
+  commissionPaise         Int // = floor(grossRentalAmountPaise x rate / 10000)
+  ownerNetPaise           Int // = grossRentalAmountPaise - commissionPaise
+
+  // Refund tracking (paise)
+  refundedAmountPaise     Int     @default(0)
+  refundNote              String?
+
+  // Payment gateway details
+  paymentStatus    PaymentStatus @default(pending)
+  youpiPaymentId   String?       // YouPI-PG paymentId (null in mock mode)
+  youpiOrderId     String?       // Our order ID sent to YouPI
+  youpiCheckoutUrl String?       // Checkout URL to redirect borrower
+  youpiRawStatus   String?       // Last raw status from YouPI
+  youpiUtr         String?       // Bank UTR if OBSERVED_SUCCESS
+
+  // Payout
+  payout PayoutRecord?
+
+  notes String? // Admin notes
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookingId])
+  @@index([paymentStatus])
+  @@index([youpiPaymentId])
+}
+
+/// Admin-managed record of payout to owner. Until marked paid, owner has NOT received money.
+model PayoutRecord {
+  id String @id @default(uuid())
+
+  transactionId String            @unique
+  transaction   RentalTransaction @relation(fields: [transactionId], references: [id])
+
+  ownerId String
+  owner   User   @relation("OwnerPayouts", fields: [ownerId], references: [id])
+
+  amountPaise Int          // = transaction.ownerNetPaise (or adjusted on partial refund)
+  status      PayoutStatus @default(pending)
+  method      String?      // e.g. "UPI", "bank_transfer", "cash"
+  reference   String?      // Payment reference / UTR for the payout
+
+  paidAt    DateTime?
+  adminNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([status])
+}
+
+/// Idempotency log for incoming YouPI-PG webhooks. Prevents duplicate commission creation.
+model PaymentWebhookEvent {
+  id             String   @id @default(uuid())
+  youpiPaymentId String
+  event          String   // e.g. "OBSERVED_SUCCESS", "FAILED", "CANCELLED"
+  deliveryId     String?  // X-Gateway-Delivery-Id header
+  payloadHash    String   // SHA-256 of raw body — secondary duplicate guard
+  processedAt    DateTime @default(now())
+
+  @@unique([youpiPaymentId, event])
+  @@index([youpiPaymentId])
+}
+
+// ===
+
+model Conversation {
+  id        String   @id @default(uuid())
+  bookingId String   @unique
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  lastMessageAt DateTime?
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookingId])
+}
+
+model ConversationParticipant {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+
+  lastReadAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@index([conversationId])
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation(fields: [senderId], references: [id])
+  content        String
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+}

@@ -1,0 +1,15 @@
+{
+  "name": "campus-rent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CampusRent monorepo scripts",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:all": "node -e \"const { spawn } = require('child_process'); spawn('npm', ['--prefix', 'backend', 'run', 'dev'], { stdio: 'inherit', shell: true }); spawn('npm', ['--prefix', 'frontend', 'run', 'dev'], { stdio: 'inherit', shell: true });\"",
+    "build": "npm --prefix frontend run build",
+    "test": "npm --prefix frontend test",
+    "install:all": "npm --prefix backend install && npm --prefix frontend install"
+  }
+}

@@ -1,0 +1,81 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+env:
+  NODE_VERSION: 20
+  JWT_SECRET: ci-jwt-secret-at-least-32-chars-long-for-testing
+  NODE_ENV: ci
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: campusrent
+          POSTGRES_PASSWORD: campusrent
+          POSTGRES_DB: campusrent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: ./backend
+        run: npm install
+
+      - name: Generate Prisma client
+        working-directory: ./backend
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://campusrent:campusrent@localhost:5432/campusrent_test
+
+      - name: Run Prisma migrations
+        working-directory: ./backend
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://campusrent:campusrent@localhost:5432/campusrent_test
+
+      - name: Lint
+        working-directory: ./backend
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Run tests with coverage
+        working-directory: ./backend
+        run: npm run test:coverage
+        env:
+          DATABASE_URL: postgresql://campusrent:campusrent@localhost:5432/campusrent_test
+          JWT_SECRET: ${{ env.JWT_SECRET }}
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: backend/coverage/
+          retention-days: 7
